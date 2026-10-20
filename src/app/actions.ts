@@ -3,6 +3,21 @@
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 
+// ================= HELPER TANGGAL =================
+const ZONA = "Asia/Jakarta";
+const LAMA_PINJAM = 7; // hari
+
+// Hasil: "YYYY-MM-DD" sesuai waktu Jakarta
+function hariIni(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: ZONA });
+}
+
+function tambahHari(tanggal: string, jumlah: number): string {
+  const d = new Date(`${tanggal}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + jumlah);
+  return d.toISOString().slice(0, 10);
+}
+
 // ================= BUKU =================
 export async function tambahBuku(formData: FormData) {
   const judul = formData.get("judul") as string;
@@ -69,8 +84,10 @@ export async function hapusBuku(id: number) {
 export async function tambahPeminjaman(formData: FormData) {
   const namaPeminjam = formData.get("namaPeminjam") as string;
   const bukuId = parseInt(formData.get("bukuId") as string);
-  const tanggalPinjam = formData.get("tanggalPinjam") as string;
-  const batasKembali = formData.get("batasKembali") as string;
+
+  // Tanggal dihitung di server (input dari form diabaikan)
+  const tanggalPinjam = hariIni();
+  const batasKembali = tambahHari(tanggalPinjam, LAMA_PINJAM);
 
   // Generate Kode Peminjaman
   const [rows]: any = await db.query(
@@ -122,10 +139,10 @@ export async function kembalikanBuku(peminjamanId: number, bukuId: number) {
     await connection.beginTransaction();
 
     // 1. Update status peminjaman
-   await connection.execute(
-  `UPDATE peminjaman SET status = 'Dikembalikan' WHERE id = ?`,
-  [peminjamanId],
-);
+    await connection.execute(
+      `UPDATE peminjaman SET status = 'Dikembalikan' WHERE id = ?`,
+      [peminjamanId],
+    );
 
     // 2. Kembalikan stok buku
     await connection.execute(
@@ -140,5 +157,18 @@ export async function kembalikanBuku(peminjamanId: number, bukuId: number) {
   } finally {
     connection.release();
   }
+  revalidatePath("/peminjaman");
+}
+
+// Perpanjang: batas kembali + 7 hari dari batas kembali yang lama
+export async function perpanjangPeminjaman(peminjamanId: number) {
+  // status dihitung lebih dulu (memakai batas_kembali lama), lalu tanggalnya diperbarui
+  await db.execute(
+    `UPDATE peminjaman
+     SET status = IF(DATE_ADD(batas_kembali, INTERVAL ${LAMA_PINJAM} DAY) >= ?, 'Dipinjam', 'Terlambat'),
+         batas_kembali = DATE_ADD(batas_kembali, INTERVAL ${LAMA_PINJAM} DAY)
+     WHERE id = ? AND status IN ('Dipinjam', 'Terlambat')`,
+    [hariIni(), peminjamanId],
+  );
   revalidatePath("/peminjaman");
 }
